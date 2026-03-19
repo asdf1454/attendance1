@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>출결 시스템</title>
+<style>
+* { box-sizing: border-box; margin:0; padding:0; }
+body { font-family: sans-serif; background:#f5f5f5; }
+.container { max-width:400px; margin:auto; padding:10px; }
+
+.tabs { display:flex; margin-bottom:15px; border-radius:10px; overflow:hidden; border:1px solid #ddd; }
+.tab {
+  flex:1; padding:12px; text-align:center;
+  font-size:15px; cursor:pointer;
+  background:white; border:none; font-weight:500;
+}
+.tab.active { background:#2196F3; color:white; }
+
+.screen { display:none; }
+.screen.active { display:block; }
+
+h2 { text-align:center; margin-bottom:10px; }
+h3 { margin:15px 0 8px; }
+
+input, button {
+  width:100%; padding:12px; margin:5px 0;
+  font-size:16px; border-radius:8px; border:1px solid #ddd;
+}
+
+.student {
+  background:white; padding:10px; margin:5px 0;
+  border-radius:8px; cursor:pointer;
+  display:flex; justify-content:space-between; align-items:center;
+}
+.student.active { background:#cce5ff; }
+.student-info { flex:1; }
+.status { font-size:12px; color:gray; margin-top:3px; }
+.status.checkin { color:#4CAF50; font-weight:bold; }
+.status.checkout { color:#f44336; font-weight:bold; }
+
+.row { display:flex; gap:5px; margin-top:10px; }
+.row button { flex:1; }
+.checkin-btn { background:#4CAF50; color:white; border:none; cursor:pointer; }
+.checkout-btn { background:#f44336; color:white; border:none; cursor:pointer; }
+.add-btn { background:#2196F3; color:white; border:none; cursor:pointer; }
+
+.del-btn {
+  background:#eee; color:#666; border:none;
+  cursor:pointer; padding:6px 10px;
+  border-radius:6px; font-size:13px;
+  width:auto; margin:0;
+}
+
+#today div {
+  background:white; padding:8px 12px;
+  margin:4px 0; border-radius:8px;
+  display:flex; justify-content:space-between;
+}
+
+.manage-student {
+  background:white; padding:12px; margin:5px 0;
+  border-radius:8px;
+  display:flex; justify-content:space-between; align-items:center;
+}
+.manage-info { flex:1; }
+.manage-info .phone { color:#888; font-size:12px; margin-top:2px; }
+
+.loading { text-align:center; color:#aaa; padding:20px; }
+.sync-status { text-align:center; font-size:12px; color:#aaa; margin-bottom:8px; }
+.sync-status.ok { color:#4CAF50; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h2>📋 출결 시스템</h2>
+  <div class="sync-status" id="syncStatus">Firebase 연결 중...</div>
+
+  <div class="tabs">
+    <button class="tab active" onclick="showTab('attend')">✅ 출결</button>
+    <button class="tab" onclick="showTab('manage')">👤 학생 관리</button>
+  </div>
+
+  <!-- 출결 화면 -->
+  <div class="screen active" id="screen-attend">
+    <input id="search" placeholder="🔍 전화번호 뒤 4자리 검색" type="tel"
+      oninput="this.value=this.value.replace(/[^0-9]/g,'').slice(0,4)">
+    <div id="list"><div class="loading">불러오는 중...</div></div>
+    <div class="row">
+      <button class="checkin-btn" onclick="checkIn()">✅ 출석</button>
+      <button class="checkout-btn" onclick="checkOut()">🚪 하원</button>
+    </div>
+    <h3>오늘 출결 현황</h3>
+    <div id="today"></div>
+  </div>
+
+  <!-- 학생 관리 화면 -->
+  <div class="screen" id="screen-manage">
+    <input id="nameInput" placeholder="학생 이름" type="text">
+    <input id="fullphone" placeholder="전화번호 (01012345678)" type="tel"
+      oninput="this.value=this.value.replace(/[^0-9]/g,'').slice(0,11)">
+    <button class="add-btn" onclick="addStudent()">학생 추가</button>
+    <h3>학생 목록</h3>
+    <div id="manageList"><div class="loading">불러오는 중...</div></div>
+  </div>
+</div>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import {
+  getFirestore, collection, doc,
+  onSnapshot, addDoc, deleteDoc,
+  setDoc, getDoc
+} from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyAyRT-qfgWXXja9umSVbn9VEVcokuy4eWo",
+  authDomain: "project-01059c0d-4306-42b0-ba6.firebaseapp.com",
+  projectId: "project-01059c0d-4306-42b0-ba6",
+  storageBucket: "project-01059c0d-4306-42b0-ba6.firebasestorage.app",
+  messagingSenderId: "1029416564658",
+  appId: "1:1029416564658:web:fe7c50cc0b4ee8882c56ab"
+};
+
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
+
+const todayKey = new Date().toISOString().slice(0, 10);
+let students = [];
+let attendance = {};
+let selected = null;
+
+const syncStatus = document.getElementById("syncStatus");
+
+// 실시간 학생 목록
+onSnapshot(collection(db, "students"), (snapshot) => {
+  students = snapshot.docs.map(d => ({ id: d.id, ...d.data() }));
+  syncStatus.textContent = "✅ Firebase 연결됨";
+  syncStatus.className = "sync-status ok";
+  renderAttend();
+  renderManage();
+}, () => {
+  syncStatus.textContent = "❌ 연결 실패 - Firestore 규칙 확인 필요";
+});
+
+// 실시간 출결
+onSnapshot(collection(db, "attendance"), (snapshot) => {
+  attendance = {};
+  snapshot.docs.forEach(d => { attendance[d.id] = d.data(); });
+  renderAttend();
+});
+
+// 탭 전환
+window.showTab = (tab) => {
+  document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+  document.querySelectorAll(".screen").forEach(s => s.classList.remove("active"));
+  document.getElementById("screen-" + tab).classList.add("active");
+  event.target.classList.add("active");
+  selected = null;
+};
+
+// 학생 추가
+window.addStudent = async () => {
+  const name = document.getElementById("nameInput").value.trim();
+  const phone = document.getElementById("fullphone").value.trim();
+
+  if (!name) return alert("이름을 입력하세요");
+  if (phone.length < 10 || phone.length > 11) return alert("전화번호를 정확히 입력하세요");
+
+  await addDoc(collection(db, "students"), {
+    name,
+    phone,
+    phone4: phone.slice(-4)
+  });
+
+  document.getElementById("nameInput").value = "";
+  document.getElementById("fullphone").value = "";
+  alert(`${name} 등록 완료`);
+};
+
+// 학생 삭제
+window.deleteStudent = async (id) => {
+  if (!confirm("정말 삭제할까요?")) return;
+  await deleteDoc(doc(db, "students", id));
+};
+
+// 출석
+window.checkIn = async () => {
+  if (!selected) return alert("학생을 선택하세요");
+  const ref = doc(db, "attendance", todayKey);
+  const snap = await getDoc(ref);
+  const data = snap.exists() ? snap.data() : {};
+  if (data[selected.id]?.checkin) return alert("이미 출석했어요");
+  data[selected.id] = { checkin: new Date().toLocaleTimeString() };
+  await setDoc(ref, data);
+  alert(`${selected.name} 출석 완료`);
+};
+
+// 하원
+window.checkOut = async () => {
+  if (!selected) return alert("학생을 선택하세요");
+  const ref = doc(db, "attendance", todayKey);
+  const snap = await getDoc(ref);
+  const data = snap.exists() ? snap.data() : {};
+  if (!data[selected.id]?.checkin) return alert("출석 먼저 해주세요");
+  if (data[selected.id]?.checkout) return alert("이미 하원했어요");
+  data[selected.id].checkout = new Date().toLocaleTimeString();
+  await setDoc(ref, data);
+  alert(`${selected.name} 하원 완료`);
+};
+
+function getStatus(id) {
+  const d = attendance[todayKey]?.[id];
+  if (!d) return { text: "미출석", cls: "" };
+  if (d.checkin && !d.checkout) return { text: `출석 ${d.checkin}`, cls: "checkin" };
+  return { text: `하원 ${d.checkout}`, cls: "checkout" };
+}
+
+// 출결 화면 렌더링
+function renderAttend() {
+  const list = document.getElementById("list");
+  const searchVal = document.getElementById("search").value;
+  list.innerHTML = "";
+
+  let filtered = students;
+  if (searchVal.length === 4) {
+    filtered = students.filter(s => s.phone4 === searchVal);
+  }
+
+  if (filtered.length === 0) {
+    list.innerHTML = '<div class="loading">학생이 없어요</div>';
+    renderToday();
+    return;
+  }
+
+  filtered.forEach(s => {
+    const status = getStatus(s.id);
+    const isActive = selected?.id === s.id;
+    const div = document.createElement("div");
+    div.className = "student" + (isActive ? " active" : "");
+    div.innerHTML = `
+      <div class="student-info">
+        <div>${s.name} <span style="color:#888;font-size:13px;">(${s.phone4})</span></div>
+        <div class="status ${status.cls}">${status.text}</div>
+      </div>
+    `;
+    div.onclick = () => { selected = s; renderAttend(); };
+    list.appendChild(div);
+  });
+
+  renderToday();
+}
+
+// 오늘 현황
+function renderToday() {
+  const box = document.getElementById("today");
+  box.innerHTML = "";
+  students.forEach(s => {
+    const d = attendance[todayKey]?.[s.id];
+    const statusText = d?.checkout ? "🚪 하원" : d?.checkin ? "✅ 출석" : "❌ 미출석";
+    const div = document.createElement("div");
+    div.innerHTML = `<span>${s.name}</span><span>${statusText}</span>`;
+    box.appendChild(div);
+  });
+}
+
+// 학생 관리 화면 렌더링
+function renderManage() {
+  const box = document.getElementById("manageList");
+  box.innerHTML = "";
+
+  if (students.length === 0) {
+    box.innerHTML = '<div class="loading">등록된 학생이 없어요</div>';
+    return;
+  }
+
+  students.forEach(s => {
+    const div = document.createElement("div");
+    div.className = "manage-student";
+    div.innerHTML = `
+      <div class="manage-info">
+        <div>${s.name}</div>
+        <div class="phone">${s.phone} (뒤 4자리: ${s.phone4})</div>
+      </div>
+      <button class="del-btn" id="del-${s.id}">삭제</button>
+    `;
+    div.querySelector(`#del-${s.id}`).onclick = () => deleteStudent(s.id);
+    box.appendChild(div);
+  });
+}
+
+document.getElementById("search").addEventListener("input", renderAttend);
+</script>
+</body>
+</html>
